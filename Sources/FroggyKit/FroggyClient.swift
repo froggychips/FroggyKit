@@ -53,6 +53,7 @@ public enum FroggyClientError: Error, CustomStringConvertible, LocalizedError {
     case connection(Int32)
     case daemonNotRunning
     case daemon(String)
+    case timeout
 
     public var description: String {
         switch self {
@@ -60,6 +61,7 @@ public enum FroggyClientError: Error, CustomStringConvertible, LocalizedError {
         case .connection(let e): return "не удалось подключиться к daemon: errno=\(e)"
         case .daemonNotRunning:  return "Froggy daemon не запущен (проверь: launchctl list | grep froggy)"
         case .daemon(let msg):   return msg
+        case .timeout:           return "timeout ожидания ответа от daemon (SO_RCVTIMEO)"
         }
     }
 
@@ -169,7 +171,11 @@ public struct FroggyClient: Sendable {
             let n = mutable.withUnsafeMutableBytes {
                 Darwin.recv(fd, $0.baseAddress, 4096, 0)
             }
-            if n <= 0 { break }
+            if n == 0 { break }
+            if n < 0 {
+                if errno == EAGAIN || errno == EWOULDBLOCK { throw FroggyClientError.timeout }
+                break
+            }
             buffer.append(mutable.prefix(n))
             while let nl = buffer.firstIndex(of: 0x0A) {
                 let line = buffer[buffer.startIndex..<nl]
