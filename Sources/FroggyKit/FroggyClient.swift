@@ -68,6 +68,7 @@ public enum FroggyClientError: Error, CustomStringConvertible, LocalizedError {
 
 /// Unix socket IPC client for the Froggy daemon.
 /// One connection per request — daemon closes the connection after the final response chunk.
+/// On `daemonNotRunning` makes one retry after 1.5 s to survive LaunchAgent bounces.
 public struct FroggyClient: Sendable {
     public let socketPath: String
     public let maxTokens: Int
@@ -101,7 +102,28 @@ public struct FroggyClient: Sendable {
     // MARK: - Sync API (blocking, for synchronous consumers)
 
     /// Sends a request and collects all response chunks until `final: true`.
+    /// Retries once after 1.5 s if the daemon is not reachable (covers LaunchAgent bounce).
     public func send(_ request: FroggyRequest, timeoutSeconds: Double = 30) throws -> [FroggyResponse] {
+        do {
+            return try sendOnce(request, timeoutSeconds: timeoutSeconds)
+        } catch FroggyClientError.daemonNotRunning {
+            Thread.sleep(forTimeInterval: 1.5)
+            return try sendOnce(request, timeoutSeconds: timeoutSeconds)
+        }
+    }
+
+    /// Convenience: sends a request, joins `text` chunks, throws on `ok: false`.
+    public func call(_ request: FroggyRequest, timeout: Double = 30) throws -> String {
+        let responses = try send(request, timeoutSeconds: timeout)
+        if let err = responses.first(where: { $0.ok == false })?.error {
+            throw FroggyClientError.daemon(err)
+        }
+        return responses.compactMap(\.text).joined()
+    }
+
+    // MARK: - Private
+
+    private func sendOnce(_ request: FroggyRequest, timeoutSeconds: Double) throws -> [FroggyResponse] {
         let fd = Darwin.socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw FroggyClientError.socketCreation }
         defer { Darwin.close(fd) }
@@ -159,14 +181,5 @@ public struct FroggyClient: Sendable {
             }
         }
         return responses
-    }
-
-    /// Convenience: sends a request, joins `text` chunks, throws on `ok: false`.
-    public func call(_ request: FroggyRequest, timeout: Double = 30) throws -> String {
-        let responses = try send(request, timeoutSeconds: timeout)
-        if let err = responses.first(where: { $0.ok == false })?.error {
-            throw FroggyClientError.daemon(err)
-        }
-        return responses.compactMap(\.text).joined()
     }
 }
