@@ -82,6 +82,14 @@ public struct FroggyClient: Sendable {
         maxTokens = Int(env["FROGGY_SRE_MAX_TOKENS"] ?? "1024") ?? 1024
     }
 
+    /// Explicit-path initializer for tests and embedded scenarios where the
+    /// `FROGGY_IPC_SOCKET` env var is not the desired source of truth.
+    /// Use this from a test that stands up its own Unix socket fixture.
+    public init(socketPath: String, maxTokens: Int = 1024) {
+        self.socketPath = socketPath
+        self.maxTokens = maxTokens
+    }
+
     // MARK: - Async API (Swift concurrency consumers)
 
     /// Generates text via the local Froggy LLM. Wraps the blocking `call` in a detached task.

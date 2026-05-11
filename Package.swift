@@ -9,5 +9,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "FroggyKit", path: "Sources/FroggyKit"),
+        .testTarget(
+            name: "FroggyKitTests",
+            dependencies: ["FroggyKit"],
+            path: "Tests/FroggyKitTests"
+        ),
     ]
 )
