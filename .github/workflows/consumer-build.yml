@@ -1,0 +1,109 @@
+name: Consumer build (self-hosted)
+
+# Cross-repo contract test: when FroggyKit changes, prove that the two
+# consumers (froggy-mcp and froggy-sre) still build and pass tests
+# against THIS revision of FroggyKit, not against a published tag.
+# Catches the "added a required field" / "renamed a public symbol"
+# class of breakage before a release tag goes out.
+#
+# Mechanism: replace the .package(url:from:) entry in each consumer's
+# Package.swift with a .package(path:) pointing at this checkout. SwiftPM
+# resolves local-path packages with higher priority than Git refs.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  consumer-build:
+    name: ${{ matrix.consumer }} against this FroggyKit
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - consumer: froggy-mcp
+            run_tests: true
+          - consumer: froggy-sre
+            run_tests: true
+
+    steps:
+      - name: Checkout FroggyKit (this revision)
+        uses: actions/checkout@v4
+        with:
+          path: FroggyKit
+          clean: false
+
+      - name: Checkout consumer repo
+        uses: actions/checkout@v4
+        with:
+          repository: froggychips/${{ matrix.consumer }}
+          path: ${{ matrix.consumer }}
+          clean: false
+
+      - name: Show toolchain
+        run: swift --version
+
+      - name: Repoint consumer at local FroggyKit
+        working-directory: ${{ matrix.consumer }}
+        env:
+          KIT_PATH: ${{ github.workspace }}/FroggyKit
+        run: |
+          set -euo pipefail
+          # SwiftPM matches package identity by URL trailing component
+          # (case-insensitive), so any .package(url: ".../FroggyKit"...) entry
+          # is rewritten to a path: local override. The original line is
+          # commented for the diff in the job log.
+          python3 - "$KIT_PATH" <<'PY'
+          import re, sys, pathlib
+          kit = sys.argv[1]
+          p = pathlib.Path("Package.swift")
+          src = p.read_text()
+          pat = re.compile(
+              r'\.package\(\s*url:\s*"https?://github\.com/[^"]*FroggyKit[^"]*"[^)]*\)',
+              re.IGNORECASE,
+          )
+          def replace(m):
+              return f'.package(name: "FroggyKit", path: "{kit}")'
+          new, n = pat.subn(replace, src)
+          if n == 0:
+              print("ERROR: no FroggyKit url package entry found", file=sys.stderr)
+              sys.exit(2)
+          p.write_text(new)
+          print(f"rewrote {n} FroggyKit package entry to local path: {kit}")
+          PY
+          echo "--- Package.swift (post-rewrite) ---"
+          grep -n FroggyKit Package.swift || true
+
+      - name: Resolve dependencies
+        working-directory: ${{ matrix.consumer }}
+        run: |
+          rm -rf .build Package.resolved
+          swift package resolve
+
+      - name: Build consumer (release)
+        working-directory: ${{ matrix.consumer }}
+        run: swift build -c release 2>&1
+
+      - name: Test consumer
+        if: matrix.run_tests
+        working-directory: ${{ matrix.consumer }}
+        run: swift test 2>&1
